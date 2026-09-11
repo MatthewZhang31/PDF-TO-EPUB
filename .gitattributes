@@ -9,7 +9,8 @@
 *.cmd  text eol=crlf
 *.bat  text eol=crlf
 *.json text eol=lf
-*.txt  text eol=lf
+# .txt ships to Windows and is read in Notepad, where CRLF is expected
+*.txt  text eol=crlf
 
 # PDFs and images are binary; the pipeline never versions book content anyway
 *.pdf  binary

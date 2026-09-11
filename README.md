@@ -7,6 +7,10 @@
 Convert a scanned PDF book into a valid EPUB 3 that keeps the original cover
 and a real, navigable table of contents.
 
+> **想直接看操作说明？** 打开 [`MANUAL.txt`](MANUAL.txt)——纯文本手册，记事本可直接读，
+> 涵盖换机配置、参数速查、工作流原理、故障排查、已知限制与实测数据。
+> 下面的 README 是仓库概览，偏工程视角。
+
 ---
 
 ## 换电脑后怎么恢复
