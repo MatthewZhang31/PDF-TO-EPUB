@@ -44,8 +44,23 @@ embedded layer and leans on the repair rules below.
   2200 px (`--ocr-height`). The scanned source is usually ~6300 px tall; 2200 is
   enough for 14 pt footnotes and roughly 3× faster than native resolution. Raise
   it to 3000 for very small type, and expect the runtime to grow accordingly.
-- Throughput on a 16-core machine: ~4 s/page in one process, ~1 s/page with 4
-  workers. A 300-page book is 5–10 minutes; always run it as a background job.
+- Throughput on a 16-core machine, measured on two real books:
+
+  | Render height | Page | Layout | Workers | Measured |
+  |---|---|---|---|---|
+  | 2200 px | 1007 pt tall | ~300 chars/page, 19 pt type | 4 | ~1.3 s/page |
+  | 2530 px (native) | 606 pt tall | ~900 chars/page, 9 pt type | 6 | ~10 s/page |
+
+  Throughput tracks **pixels and text density**, not page count. A dense 9 pt
+  book at native resolution is roughly 8× slower per page than a sparse one at
+  2200 px, so a 444-page dense scan is a ~75 minute job, not a 7 minute one.
+  Budget from the page geometry in `analysis.json` (`page_size`,
+  `body_font_size`) rather than from the page count, and always run OCR as a
+  background job.
+
+  Start at 2200 px. Raise `--ocr-height` to the source image height (reported by
+  `extract`) only when the type is small (≈9 pt) or the OCR results look thin —
+  the cost is linear in height and quadratic in the temptation to redo a run.
 - Bounding boxes are scaled back into PDF points so OCR and embedded lines are
   interchangeable downstream.
 - Footnote markers: RapidOCR drops standalone superscripts. If a book depends on

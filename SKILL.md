@@ -290,10 +290,11 @@ book-wide run.
 | footnote text glued to body | footnote block too close to the body font size | lower the footnote ratio threshold in `clean.py` (`split_footnotes`) |
 | `RuntimeError: An attempt has been made to start a new process…` | unguarded `__main__` with the OCR pool | guard the entry point, or pass `--workers 1` |
 
-## Verified reference run
+## Verified reference runs
 
-《齐泽克的笑话》 (Henan University Press, 2016; 177-page ABBYY scan, Simplified
-Chinese) was converted end to end as the acceptance test:
+### 《齐泽克的笑话》 — has a PDF outline
+
+(Henan University Press, 2016; 177-page ABBYY scan, Simplified Chinese)
 
 | Step | Command | Result |
 |---|---|---|
@@ -311,6 +312,28 @@ in the EPUB.
 Residual defects (character-level OCR slips that no rule can fix safely):
 `三个自人`→`三个白人`, `便于后人`→`便于后入`, `陷人`→`陷入`. Report this class
 of error to the user; do not silently "correct" it with a dictionary.
+
+### 《人类的误测：智商歧视的科学史》 — no PDF outline
+
+(Chongqing University Press; 444-page 2023 PaperStream/Acrobat scan, 9 pt type,
+no bookmarks, no title/author metadata)
+
+| Step | Command | Result |
+|---|---|---|
+| analyse | `analyze` | mode `text-layer`, 438/444 pages, garble 0 %, body 9 pt, **0 outline entries** |
+| TOC discovery | (automatic) | contents pages `[7, 8, 9, 10]`; folios read on 273 pages; **offset +10** (244 pages agree) |
+| TOC review | eyeballed `toc.json` | automatic rows were usable but chapter-level entries were damaged by OCR, so the contents were transcribed by hand into `chapters.json` (13 chapters, 33 sections, 57 subsections) |
+| OCR | `ocr --workers 6 --ocr-height 2530` | 438 pages in **74 min** (~10 s/page) |
+| assemble + build | `all --chapters chapters.json` | 85 spine sections + 18 nav-only, 3891 paragraphs, 384 061 chars |
+| validate | `build` | 93 entries, 90 XML documents all well-formed, **192 internal references resolved**, cover present, **0 issues** |
+
+Two defects this book exposed, both now fixed and covered by the self-test:
+
+- `nav_only`/`href` were written to `book.json` but not read back, so every
+  sub-entry became its own chapter and each shared page's text appeared once per
+  entry — 103 chapter files and 18 694 duplicated characters.
+- `cover.xhtml` referenced `../images/cover.jpg`, correct only under `text/`.
+  The package validated clean while the cover rendered as a broken image.
 
 ## Extending
 
