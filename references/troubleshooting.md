@@ -126,6 +126,25 @@ book has no notes at all the block is empty and nothing changes.
 Add a context-anchored rule to `REPAIR_RULES` and verify with
 `repair_report()`. Do not add a blanket character substitution.
 
+**The EPUB has repeated text, or the nav points at files like `text/nav003.xhtml`**
+Nav-only contents rows lost their `nav_only`/`href` fields somewhere between
+`assemble` and `build`. `stage_build` reconstructs `Chapter` objects from
+`book.json`, so any field that is written by `to_dict()` but not read back is
+silently defaulted — which promotes every sub-entry into a chapter with a file
+of its own, and makes each shared page's text appear once per entry. The
+self-test covers this round-trip explicitly; when adding a field to `Chapter`,
+add it to `to_dict()` *and* to the reconstruction in `pdf2epub.py`.
+
+Symptom to look for: `epub_check.json`'s `chapters` (manifest count) far exceeds
+the number of top-level sections in `toc.json`, and the package is larger than
+the sum of its page text.
+
+**Navigation is one flat level when the book clearly has sections**
+`assign_toc_levels` only splits levels when the indent gaps are real. Check the
+run log line reporting how many indent levels were found; if it says 1, the
+contents page is single-column with no reliable indentation and the hierarchy
+has to come from `--chapters`.
+
 ## EPUB
 
 **`validate` reports `manifest href missing from archive`**

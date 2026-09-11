@@ -322,6 +322,8 @@ def stage_build(args, book: dict | None = None) -> str:
             id=c["id"], title=c["title"], level=c["level"],
             start_page=c["start_page"], end_page=c["end_page"],
             front_matter=c.get("front_matter", False),
+            nav_only=c.get("nav_only", False),
+            href=c.get("href", ""),
             blocks=[Block(kind=b["kind"], text=b["text"], pages=b.get("pages", []))
                     for b in c["blocks"]],
         ))

@@ -293,6 +293,37 @@ check_true("nav-only title is absent from the OPF manifest",
            _opf2.count("application/xhtml+xml") == 2, _opf2)
 check("the nav-only package validates", validate_epub(_chk)["issues"], [])
 
+# --------------------------------------------------------------------------
+print("\n[10] book.json round-trip: nav_only/href must survive assemble -> build")
+# stage_build reconstructs Chapter objects from book.json; a field that is
+# serialised but not read back silently turns every nav-only row into its own
+# chapter with a file of its own.
+from p2e.structure import Chapter as _Chapter  # noqa: E402
+
+_round = [_Chapter(id="ch001", title="第三章 头部测量", level=1, start_page=10,
+                   end_page=20,
+                   blocks=[Block(kind="para", text="正文。", pages=[10])]),
+          _Chapter(id="nav002", title="数字的诱惑", level=2, start_page=10,
+                   end_page=10, nav_only=True, href="text/ch001.xhtml")]
+_d = [_round[1].to_dict()]
+_rebuilt = _Chapter(id=_d[0]["id"], title=_d[0]["title"], level=_d[0]["level"],
+                    start_page=_d[0]["start_page"], end_page=_d[0]["end_page"],
+                    front_matter=_d[0].get("front_matter", False),
+                    nav_only=_d[0].get("nav_only", False),
+                    href=_d[0].get("href", ""))
+check_true("nav_only survives to_dict/from_dict",
+           _rebuilt.nav_only and _rebuilt.target() == "text/ch001.xhtml",
+           f"{_rebuilt.nav_only} {_rebuilt.target()}")
+
+_chk2 = os.path.join(tmp, "roundtrip.epub")
+build_epub(_chk2, _round, title="roundtrip", author="", lang="zh")
+with _zip2.ZipFile(_chk2) as _z3:
+    _nav2 = _z3.read("OEBPS/nav.xhtml").decode("utf-8")
+    _files2 = [n for n in _z3.namelist() if n.startswith("OEBPS/text/")]
+check("nav-only row creates no file of its own", len(_files2), 1)
+check_true("nav-only row links to its parent's file",
+           'href="text/ch001.xhtml"' in _nav2 and "nav002.xhtml" not in _nav2, _nav2)
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} check(s) FAILED:")
