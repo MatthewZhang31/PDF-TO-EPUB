@@ -325,8 +325,10 @@ def assemble(pages: list[PageText], chapters: list[Chapter],
         page_figs = list((figures or {}).get(pt.page, []))
         drop: set[int] = set()
         for f in page_figs:
+            has_cap = f.cap[1] > f.cap[0]
             for l in body + foot:
-                if in_band(l, f) or (l.y1 > f.cap[0] - 1 and l.y0 < f.cap[1] + 1):
+                if in_band(l, f) or (has_cap and l.y1 > f.cap[0] - 1
+                                     and l.y0 < f.cap[1] + 1):
                     drop.add(id(l))
         # a table's cells are set in smaller type than the body, so the footnote
         # splitter claims them before the figure bands are consulted; filter the
@@ -402,7 +404,9 @@ def _drop_repeated_title(c: Chapter) -> list[Block]:
     Covers both a copy of the full title and the bare ``【第三章】`` label that
     chapter openers in scanned books carry above the epigraph.
     """
-    blocks = [b for b in c.blocks if b.text.strip()]
+    # an uncaptioned illustration legitimately has no text, so it must survive
+    # the empty-block filter
+    blocks = [b for b in c.blocks if b.text.strip() or b.kind == "figure"]
     while blocks and blocks[0].kind == "para" \
             and _CHAPTER_LABEL_RE.match(squeeze(blocks[0].text)):
         blocks = blocks[1:]

@@ -215,43 +215,13 @@ def stage_assemble(args, rep: dict | None = None) -> dict:
     body = body_font_size(pages)
     step(f"assembling {len(pages)} pages (text-source={args.text_source}, body {body}pt)")
 
-    # tables and diagrams are cropped out of the page scans and re-inserted in
-    # the reading flow; without this the OCR text of a table becomes gibberish
-    # paragraphs and the artwork is lost entirely
     from p2e.clean import global_margins, profile_page
-    from p2e.figures import crop_bands, merge_figures, plan_figures, save_figures
     gl, gr = global_margins(pages, body)
     profs = {p.page: profile_page(p, body, gl, gr) for p in pages}
-    found = plan_figures(pages, profs, body)
 
-    # The two text sources see different captions: one Mangles a label the other
-    # reads cleanly, so detect on both and merge by where the graphic sits.
-    if args.text_source != "embedded" and embedded:
-        emb_pages = [embedded[p] for p in sorted(embedded)]
-        gl2, gr2 = global_margins(emb_pages, body)
-        profs2 = {p.page: profile_page(p, body, gl2, gr2) for p in emb_pages}
-        alt = plan_figures(emb_pages, profs2, body)
-        before = sum(len(v) for v in found.values())
-        found = merge_figures(found, alt)
-        extra = sum(len(v) for v in found.values()) - before
-        if extra:
-            step(f"figures: {extra} more found in the embedded text layer")
-
-    figure_dir = os.path.join(out, "figures")
-    if found and not args.no_figures:
-        flat = [f for v in found.values() for f in v]
-        crop_bands(args.pdf, flat, (gl - 6, gr + 10), dpi=args.figure_dpi)
-        written = save_figures(found, figure_dir)
-        tables = sum(1 for f in flat if f.kind == "table")
-        step(f"figures: {len(flat)} cropped ({tables} tables, "
-             f"{len(flat) - tables} figures) from {len(found)} pages, "
-             f"at {args.figure_dpi} dpi")
-    elif found:
-        step(f"figures: {sum(len(v) for v in found.values())} found but "
-             f"--no-figures was given; dropping them")
-        found = {}
-
-    # chapter skeleton
+    # ---------------------------------------------------------------- chapters
+    # resolved before figures so that artwork detection can skip the front
+    # matter, whose full-page images are the cover rather than book content
     if args.chapters:
         manual = read_json(args.chapters)
         chapters = apply_manual_chapters(manual, page_count)
@@ -299,6 +269,56 @@ def stage_assemble(args, rep: dict | None = None) -> dict:
             [{"title": rep.get("title") or "正文", "page": 1}], page_count)
         warn("no outline or TOC found - the whole book became one chapter; "
              "pass --chapters headings.json to define sections")
+
+    # ---------------------------------------------------------------- figures
+    # tables and diagrams are cropped out of the page scans and re-inserted in
+    # the reading flow; without this the OCR text of a table becomes gibberish
+    # paragraphs and the artwork is lost entirely
+    from p2e.figures import (crop_bands, merge_figures, plan_artwork,
+                             plan_figures, save_figures)
+    found = plan_figures(pages, profs, body)
+
+    # The two text sources see different captions: one mangles a label the other
+    # reads cleanly, so detect on both and merge by where the graphic sits.
+    if args.text_source != "embedded" and embedded:
+        emb_pages = [embedded[p] for p in sorted(embedded)]
+        gl2, gr2 = global_margins(emb_pages, body)
+        profs2 = {p.page: profile_page(p, body, gl2, gr2) for p in emb_pages}
+        alt = plan_figures(emb_pages, profs2, body)
+        before = sum(len(v) for v in found.values())
+        found = merge_figures(found, alt)
+        extra = sum(len(v) for v in found.values()) - before
+        if extra:
+            step(f"figures: {extra} more found in the embedded text layer")
+
+    # artwork carries no caption at all, so it is found from the pixels. Only
+    # pages inside the reading order are considered: front matter and anything
+    # outside the first..last chapter (cover, back cover, title, copyright) is
+    # a full-page scan too and would otherwise be cropped as an illustration.
+    read_pages = {p for c in chapters if not c.front_matter
+                  for p in range(c.start_page, c.end_page + 1)}
+    outside = set(range(1, page_count + 1)) - read_pages
+    art = plan_artwork(args.pdf, pages, profs, exclude_pages=outside)
+    n_art = sum(len(v) for v in art.values())
+    if n_art:
+        found = merge_figures(found, art)
+        kept = sum(1 for v in found.values() for f in v if f.kind == "art")
+        step(f"figures: {kept} uncaptioned illustration(s) found by ink analysis")
+
+    figure_dir = os.path.join(out, "figures")
+    if found and not args.no_figures:
+        flat = [f for v in found.values() for f in v]
+        crop_bands(args.pdf, flat, (gl - 6, gr + 10), dpi=args.figure_dpi)
+        save_figures(found, figure_dir)
+        tables = sum(1 for f in flat if f.kind == "table")
+        art_n = sum(1 for f in flat if f.kind == "art")
+        step(f"figures: {len(flat)} cropped ({tables} tables, {art_n} artwork, "
+             f"{len(flat) - tables - art_n} captioned figures) "
+             f"from {len(found)} pages, at {args.figure_dpi} dpi")
+    elif found:
+        step(f"figures: {sum(len(v) for v in found.values())} found but "
+             f"--no-figures was given; dropping them")
+        found = {}
 
     book = assemble(pages, chapters, body, repair=not args.no_repair,
                     figures=found)

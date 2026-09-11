@@ -162,6 +162,34 @@ Detection runs on **both** text sources and merges by band overlap, because each
 source mangles a different caption. On the reference book the OCR layer found 41
 graphics and the embedded layer 36; the union was 41.
 
+### Illustrations without a caption
+
+Cartoons, portraits, plates and continuation tables have no `图3.1` to key on,
+so `plan_artwork()` finds them from the pixels: render the page, mask out the OCR
+line boxes, and look for bands where the *remaining* ink is substantial. On the
+reference books real artwork occupies **2–47 % of a page while every ordinary
+text page stays under 0.35 %**, so a 1 % floor separates them with a very wide
+margin.
+
+Only pages inside the reading order are scanned. Front matter and anything
+outside the first..last chapter are full-page scans too and would otherwise be
+cropped as illustrations — that is how the cover, title page and copyright page
+got picked up the first time.
+
+Two shapes need care, both handled:
+
+- **A vertically set caption** (printed down the side of a figure) has the
+  opposite aspect to a horizontal one and spans the artwork's full height, so
+  treating it as a normal caption puts the band in blank space above the figure.
+  `_is_vertical_line()` rejects it and the ink analysis finds the artwork.
+- **A page with no text at all** is exactly what a full-page plate looks like, so
+  artwork planning must not skip text-less pages.
+
+Across the two reference books this recovered 7 illustrations that captions
+alone missed — a cartoon and an author portrait in one, and a table
+continuation, an uncaptioned data table, a figure with a vertical caption and
+two skull plates in the other. All real; no false positives.
+
 ### Verifying figure output
 
 ```powershell

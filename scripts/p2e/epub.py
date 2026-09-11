@@ -78,10 +78,10 @@ def chapter_xhtml(ch: Chapter, lang: str, marker: str = "") -> str:
     for b in ch.blocks:
         text = b.text.strip()
         if b.kind == "figure" and b.image:
+            cap = f"\n  <figcaption>{escape(text)}</figcaption>" if text else ""
             parts.append(
                 '<figure class="fig">\n'
-                f'  <img src="../images/{escape(b.image)}" alt="{escape(b.label or text[:20])}"/>\n'
-                f'  <figcaption>{escape(text)}</figcaption>\n'
+                f'  <img src="../images/{escape(b.image)}" alt="{escape(b.label or "插图")}"/>{cap}\n'
                 "</figure>")
             continue
         if not text:

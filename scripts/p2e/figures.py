@@ -177,6 +177,20 @@ def _adjacent_graphic_extent(lines: list[Line], group: list[Line],
     return cap_top - start
 
 
+def _is_vertical_line(line: Line) -> bool:
+    """A run of text set vertically, e.g. a caption printed down a figure's side.
+
+    Caption geometry assumes horizontal setting: the caption sits beside the
+    graphic and its box is wide and short. A vertical caption is the opposite
+    shape and spans the graphic's full height, so treating it as a normal
+    caption puts the "graphic" band in blank space above the artwork. The ink
+    analysis finds these correctly instead.
+    """
+    h = line.y1 - line.y0
+    w = line.x1 - line.x0
+    return h > max(3.0 * w, 40.0)
+
+
 def find_captions(page_lines: list[Line], text_width: float,
                   page_height: float) -> list[tuple[list[Line], str, str]]:
     """Return [(caption lines, label, kind)] for genuine captions on a page."""
@@ -184,7 +198,7 @@ def find_captions(page_lines: list[Line], text_width: float,
     seen: set[str] = set()
     for i, line in enumerate(page_lines):
         m = CAPTION_AT_START_RE.match(line.text)
-        if not m or _looks_like_reference(line.text):
+        if not m or _looks_like_reference(line.text) or _is_vertical_line(line):
             continue
         label = normalize_label(m.group("label"))
         if label in seen:
@@ -241,6 +255,95 @@ def label_is_clean(label: str) -> bool:
     """
     m = re.match(r"^(?:图表|表|图)(\d{1,3})\.(\d{1,3})$", label)
     return bool(m) and len(m.group(2)) <= 2
+
+
+def plan_artwork(pdf_path: str, pages: list[PageText], profiles: dict,
+                 exclude_pages: set[int] | None = None,
+                 min_area_frac: float = 0.01, min_height: float = 40.0,
+                 dpi: int = 100, gap_pt: float = 14.0) -> dict[int, list[Figure]]:
+    """Find illustrations that carry no caption at all.
+
+    Cartoons, portraits and plates have no ``图3.1`` to key on, so they are found
+    from the pixels instead: render the page, mask out the OCR line boxes, and
+    look for bands where the *remaining* ink is substantial. Real artwork here
+    occupies 2-47 % of a page while every ordinary text page stays under 0.35 %,
+    so a 1 % floor separates them cleanly with a very wide margin.
+
+    Captioned figures are planned separately; call :func:`merge_figures` to
+    combine the two so a table is not cropped twice.
+    """
+    import numpy as np
+    import pymupdf
+
+    skip = exclude_pages or set()
+    doc = pymupdf.open(pdf_path)
+    zoom = dpi / 72.0
+    out: dict[int, list[Figure]] = {}
+
+    for pt in pages:
+        if pt.page in skip:
+            continue
+        page = doc[pt.page - 1]
+        pm = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom),
+                             colorspace=pymupdf.csGRAY)
+        arr = np.frombuffer(pm.samples, dtype=np.uint8).reshape(pm.height, pm.width)
+        ink = arr < 200.0
+        if not ink.any():
+            continue
+
+        text = np.zeros_like(ink)
+        for l in pt.lines:
+            x0 = int(max(0, l.x0 * zoom - 2))
+            x1 = int(min(pm.width, l.x1 * zoom + 2))
+            y0 = int(max(0, l.y0 * zoom - 2))
+            y1 = int(min(pm.height, l.y1 * zoom + 2))
+            if x1 > x0 and y1 > y0:
+                text[y0:y1, x0:x1] = True
+        art = ink & ~text
+        page_area = float(pm.width * pm.height)
+
+        # rows carrying more artwork ink than scanner speckle
+        row_min = max(3, int(pm.width * 0.012))
+        rows = art.sum(axis=1)
+        gap = max(2, int(gap_pt * zoom))
+        bands: list[list[int]] = []
+        start = None
+        quiet = 0
+        for y in range(pm.height):
+            if rows[y] >= row_min:
+                if start is None:
+                    start = y
+                quiet = 0
+            elif start is not None:
+                quiet += 1
+                if quiet > gap:
+                    bands.append([start, y - quiet])
+                    start = None
+        if start is not None:
+            bands.append([start, pm.height - 1])
+
+        figs: list[Figure] = []
+        for y0, y1 in bands:
+            height_pt = (y1 - y0) / zoom
+            if height_pt < min_height:
+                continue
+            block = art[y0:y1 + 1]
+            frac = float(block.sum()) / page_area
+            if frac < min_area_frac:
+                continue
+            cols = np.where(block.any(axis=0))[0]
+            if cols.size == 0:
+                continue
+            figs.append(Figure(
+                page=pt.page, kind="art", label="", caption="",
+                band=(round(y0 / zoom, 1), round(y1 / zoom, 1)),
+                cap=(0.0, 0.0)))
+            _ = cols
+        if figs:
+            out[pt.page] = figs
+
+    doc.close()
+    return out
 
 
 def _overlap_ratio(a: Figure, b: Figure) -> float:
