@@ -177,13 +177,43 @@ chs = [
     Chapter(id="ch003", title="注释", level=1, start_page=5, end_page=5,
             blocks=[Block(kind="para", text="除非特别注明，所有的笑话均出自未发表的手稿。", pages=[5])]),
 ]
+
+# a real cover, because a wrong relative path inside cover.xhtml yields a
+# perfectly valid package that renders as a broken image
+from PIL import Image  # noqa: E402
+cover_path = os.path.join(tmp, "cover.jpg")
+Image.new("RGB", (600, 900), (30, 60, 120)).save(cover_path, "JPEG")
+
 build_epub(epub_path, chs, title="齐泽克的笑话", author="斯拉沃热·齐泽克",
-           lang="zh", source="selftest")
+           lang="zh", source="selftest", cover_path=cover_path)
 info = validate_epub(epub_path)
 check("no validation issues", info["issues"], [])
-check_true("cover-less build still validates", info["entries"] >= 6)
+check_true("cover is in the package", info["cover"])
+check_true("internal references were resolved", info["internal_refs"] >= 5,
+           str(info.get("internal_refs")))
 check("mimetype first entry", __import__("zipfile").ZipFile(epub_path).namelist()[0], "mimetype")
 check_true("text survived", info["text_chars"] > 200, str(info["text_chars"]))
+
+# the cover page must point at the image relative to OEBPS/, not OEBPS/text/
+import zipfile as _zip  # noqa: E402
+with _zip.ZipFile(epub_path) as _z:
+    _cover = _z.read("OEBPS/cover.xhtml").decode("utf-8")
+    _opf = _z.read("OEBPS/content.opf").decode("utf-8")
+check_true("cover.xhtml uses the OEBPS-relative image path",
+           "images/cover.jpg" in _cover and "../images/cover.jpg" not in _cover,
+           _cover)
+check_true("cover.xhtml wraps the image in an explicit-viewBox SVG",
+           'viewBox="0 0 600 900"' in _cover, _cover)
+check_true("cover page is first in the spine",
+           _opf.index('idref="cover"') < _opf.index('idref="ch001"'), _opf)
+
+# a package with no cover at all must still validate cleanly
+_bad = os.path.join(tmp, "nocover.epub")
+build_epub(_bad, chs, title="broken", author="", lang="zh")
+_badinfo = validate_epub(_bad)
+check_true("cover-less build still validates", _badinfo["issues"] == [],
+           str(_badinfo["issues"]))
+
 try:
     import shutil
     shutil.rmtree(tmp, ignore_errors=True)

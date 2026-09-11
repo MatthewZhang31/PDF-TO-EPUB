@@ -99,6 +99,35 @@ A build was interrupted. Delete the `.epub` and re-run `build`; the writer only
 renames the temporary file after the archive is complete.
 
 **The cover does not show in a reader**
+The most likely cause is a **wrong relative path inside `cover.xhtml`**, not a
+missing image. `cover.xhtml` lives at `OEBPS/cover.xhtml`, so it must reference
+`images/cover.jpg`; `../images/cover.jpg` is correct only for documents under
+`OEBPS/text/`. A wrong path yields a package that passes every manifest check
+and renders as a broken-image placeholder. This actually shipped once — the
+fix is to look at the rendered page, not at the file listing:
+
+```powershell
+# extract and render the cover page in a headless browser
+python -c "import zipfile;zipfile.ZipFile(r'book.epub').extractall(r'%TEMP%\epubcheck')"
+& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --headless=new `
+  --screenshot="$env:TEMP\epubcheck\cover.png" --window-size=760,1300 `
+  "file:///$env:TEMP/epubcheck/OEBPS/cover.xhtml"
+```
+
+A screenshot of a few kilobytes is a broken image; a real cover is hundreds of
+kilobytes. `validate` now resolves every `link@href`, `img@src`,
+`svg image@xlink:href` and `a@href` inside each document and reports the
+target it could not find, so this cannot ship again.
+
+**EPUB 3 cover properties ignored by the reader**
+`properties="cover-image"` is EPUB 3; older readers use the EPUB 2 convention
+`<meta name="cover" content="<manifest-id>"/>`. Both are written. WPS Office
+(registered here as `KWPS.EPUB.9`) ignores some EPUB 3 cover conventions, which
+is why the cover page is also wrapped in a full-page SVG with an explicit
+`viewBox` — the markup Calibre, Sigil and most publishers emit, and the most
+widely compatible form.
+
+**The cover does not show in a reader**
 EPUB 3 cover display needs the `properties="cover-image"` manifest item (written
 automatically) and, for older readers, the `<meta name="cover">` entry (also
 written automatically). If a specific reader still ignores it, confirm the

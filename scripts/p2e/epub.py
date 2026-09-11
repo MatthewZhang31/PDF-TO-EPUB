@@ -58,6 +58,7 @@ def _xhtml(title: str, body: str, lang: str = "zh", css_href: str = "../styles/s
 
 
 def chapter_xhtml(ch: Chapter, lang: str, marker: str = "") -> str:
+    """Render a chapter. Written to OEBPS/text/, so ../ links reach OEBPS/."""
     parts: list[str] = []
     tag = "h1" if ch.level <= 1 else ("h2" if ch.level == 2 else "h3")
     anchor = f' id="{escape(ch.id)}"' if marker else ""
@@ -80,16 +81,42 @@ def chapter_xhtml(ch: Chapter, lang: str, marker: str = "") -> str:
         parts.append("<hr/>")
         parts.extend(foots)
         parts.append("</div>")
-    return _xhtml(ch.title, "\n".join(parts), lang)
+    return _xhtml(ch.title, "\n".join(parts), lang, css_href="../styles/style.css")
 
 
-def cover_xhtml(lang: str, image_href: str = "../images/cover.jpg") -> str:
-    body = (
-        '<div class="cover">\n'
-        f'  <img src="{image_href}" alt="cover"/>\n'
-        "</div>"
-    )
-    return _xhtml("Cover", body, lang)
+def cover_xhtml(lang: str, *, image_href: str = "images/cover.jpg",
+                image_size: tuple[int, int] | None = None,
+                css_href: str = "styles/style.css") -> str:
+    """Render the cover page.
+
+    Written to OEBPS/cover.xhtml, so its own links are relative to OEBPS/ —
+    ``images/cover.jpg``, not ``../images/cover.jpg``. Getting this wrong
+    produces a valid-looking package whose cover page renders as a broken
+    image, which is why validate_epub now resolves every internal reference.
+
+    A plain ``<img>`` sized only by CSS is rendered inconsistently by older
+    readers (notably WPS Office); wrapping it in a full-page SVG with an
+    explicit viewBox is the most portable cover markup there is.
+    """
+    if image_size:
+        w, h = image_size
+        body = (
+            '<div class="cover">\n'
+            '  <svg xmlns="http://www.w3.org/2000/svg" '
+            'xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" '
+            f'width="100%" height="100%" viewBox="0 0 {w} {h}" '
+            'preserveAspectRatio="xMidYMid meet">\n'
+            f'    <image width="{w}" height="{h}" xlink:href="{image_href}"/>\n'
+            "  </svg>\n"
+            "</div>"
+        )
+    else:
+        body = (
+            '<div class="cover">\n'
+            f'  <img src="{image_href}" alt="cover"/>\n'
+            "</div>"
+        )
+    return _xhtml("Cover", body, lang, css_href=css_href)
 
 
 def normalize_depths(chapters: list[Chapter]) -> list[int]:
@@ -128,7 +155,11 @@ def _nav_ol(chapters: list[Chapter], depths: list[int],
 
 
 def nav_xhtml(chapters: list[Chapter], lang: str, title: str) -> str:
-    """EPUB 3 navigation document: the toc plus a landmarks list."""
+    """EPUB 3 navigation document: the toc plus a landmarks list.
+
+    Written to OEBPS/nav.xhtml, so its stylesheet link is ``styles/style.css``
+    while its links into the text are ``text/<id>.xhtml``.
+    """
     if chapters:
         depths = normalize_depths(chapters)
         toc, _ = _nav_ol(chapters, depths, 0, 1)
@@ -150,7 +181,7 @@ def nav_xhtml(chapters: list[Chapter], lang: str, title: str) -> str:
         + "\n".join(landmarks)
         + "\n</ol>\n</nav>"
     )
-    return _xhtml(title, body, lang, css_href="../styles/style.css")
+    return _xhtml(title, body, lang, css_href="styles/style.css")
 
 
 def ncx_xml(chapters: list[Chapter], title: str, book_id: str) -> str:
@@ -279,7 +310,17 @@ def build_epub(out_path: str, chapters: list[Chapter], *, title: str, author: st
                    zipfile.ZIP_DEFLATED)
         z.writestr("OEBPS/styles/style.css", css, zipfile.ZIP_DEFLATED)
         if has_cover:
-            z.writestr("OEBPS/cover.xhtml", cover_xhtml(lang), zipfile.ZIP_DEFLATED)
+            size = None
+            try:
+                from PIL import Image
+                with Image.open(cover_path) as im:
+                    size = im.size
+            except Exception:
+                size = None
+            z.writestr("OEBPS/cover.xhtml",
+                       cover_xhtml(lang, image_href="images/cover.jpg",
+                                   image_size=size),
+                       zipfile.ZIP_DEFLATED)
             z.write(cover_path, "OEBPS/images/cover.jpg", zipfile.ZIP_DEFLATED)
         for ch in spine_chapters:
             z.writestr(f"OEBPS/text/{ch.id}.xhtml",
@@ -344,6 +385,41 @@ def validate_epub(path: str) -> dict:
         if not spine_ids:
             issues.append("spine has no itemref entries")
         info["spine_items"] = len(spine_ids)
+
+        # Resolve every internal reference *inside* each document. A manifest
+        # entry can exist while the document that points at it uses the wrong
+        # relative path, which renders as a broken image or an unstyled page
+        # in a reader and is otherwise invisible to a package-level check.
+        nameset = set(names)
+        checked = 0
+        link_attrs = (
+            ("{http://www.w3.org/1999/xhtml}link", "href"),
+            ("{http://www.w3.org/1999/xhtml}img", "src"),
+            ("{http://www.w3.org/1999/xhtml}image", "{http://www.w3.org/1999/xlink}href"),
+            ("{http://www.w3.org/1999/xhtml}a", "href"),
+        )
+        for n in xml_docs:
+            try:
+                root = ET.fromstring(z.read(n))
+            except ET.ParseError:
+                continue
+            base = n.rsplit("/", 1)[0]
+            for tag, attr in link_attrs:
+                for el in root.iter(tag):
+                    ref = el.get(attr)
+                    if not ref or ref.startswith(("#", "http:", "https:", "mailto:", "data:")):
+                        continue
+                    path = ref.split("#", 1)[0]
+                    if not path:
+                        continue
+                    target = os.path.normpath(os.path.join(base, path)).replace("\\", "/")
+                    checked += 1
+                    if target.endswith("/"):
+                        continue
+                    if target not in nameset:
+                        issues.append(
+                            f"{n} references missing resource {ref!r} (resolved to {target})")
+        info["internal_refs"] = checked
 
         text_chars = 0
         for n in names:
