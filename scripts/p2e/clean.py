@@ -24,12 +24,15 @@ from .util import (Line, PageText, is_cjk, looks_garbled, median, normalize_text
 @dataclass
 class Block:
     """A recovered logical block of text."""
-    kind: str                 # 'heading' | 'para' | 'footnote' | 'plain'
+    kind: str                 # 'heading' | 'para' | 'footnote' | 'plain' | 'figure'
     text: str
     pages: list[int] = field(default_factory=list)
+    image: str = ""           # filename for a figure block
+    label: str = ""           # figure/table number, e.g. '表2.1'
 
     def to_dict(self) -> dict:
-        return {"kind": self.kind, "text": self.text, "pages": self.pages}
+        return {"kind": self.kind, "text": self.text, "pages": self.pages,
+                "image": self.image, "label": self.label}
 
 
 BULLETS = "◎●○◆◇■□▪▶►·•＊*※"
@@ -281,6 +284,26 @@ def group_footnotes(lines: list[Line]) -> list[str]:
 # --------------------------------------------------------------------------
 # inline running heads
 # --------------------------------------------------------------------------
+
+def text_column(lines: list[Line], left: float, right: float,
+                slack: float = 8.0) -> list[Line]:
+    """Lines that belong to the text column, ordered by vertical position.
+
+    A vertically set running head down the outer margin is the reason this
+    exists: it spans the whole page height, so the margin-band test never sees
+    it, and its individual characters get appended to whatever paragraph is open
+    when they are read. Restricting to the column's horizontal extent removes it
+    along with the folio.
+
+    Sorting by raw y matters too: the line list elsewhere is clustered into rows
+    to rebuild reading order, which is right for paragraphs but wrong for
+    geometry, where overlapping artwork labels would put captions out of
+    vertical sequence.
+    """
+    kept = [l for l in lines if l.x0 <= right + slack and l.x1 >= left - slack]
+    kept.sort(key=lambda l: (round(l.y0, 1), l.x0))
+    return kept
+
 
 def frequent_margin_strings(pages: list[PageText], profiles: dict[int, PageProfile],
                             body_size: float, min_pages: int = 3) -> set[str]:

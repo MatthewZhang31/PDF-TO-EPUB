@@ -7,7 +7,8 @@ from typing import Any, Optional
 
 from .clean import (Block, PageProfile, global_margins, group_footnotes,
                     is_heading_like, join_lines, profile_page, repair_text,
-                    split_footnotes, strip_running_heads, transfer_markers)
+                    split_footnotes, strip_running_heads, text_column,
+                    transfer_markers)
 from .util import (Line, PageText, is_junk, log, normalize_text, squeeze, step,
                    warn)
 
@@ -284,8 +285,18 @@ def _drop_leading_title_line(lines: list[Line], titles: list[str]) -> list[Line]
 
 
 def assemble(pages: list[PageText], chapters: list[Chapter],
-             body_size: float, repair: bool = True) -> AssembledBook:
-    """Clean every page and pour it into the chapter skeletons."""
+             body_size: float, repair: bool = True,
+             figures: dict[int, list] | None = None) -> AssembledBook:
+    """Clean every page and pour it into the chapter skeletons.
+
+    When ``figures`` is supplied, the lines that make up a table or diagram are
+    removed from the text and replaced by a figure block carrying the cropped
+    image, so the graphic appears in the reading flow where the page has it
+    instead of being lost. Its caption text is removed from the flow as well,
+    because it becomes the ``figcaption``.
+    """
+    from .figures import caption_y, in_band
+
     start_titles: dict[int, list[str]] = {}
     for c in chapters:
         key = _norm_title(c.title)
@@ -301,18 +312,59 @@ def assemble(pages: list[PageText], chapters: list[Chapter],
     per_page_blocks: dict[int, list[Block]] = {}
     heading_candidates: list[dict] = []
     dropped = 0
+    n_figures = 0
     for pt in pages:
         prof = profiles[pt.page]
         lines = _drop_leading_title_line(stripped.get(pt.page, []),
                                          start_titles.get(pt.page, []))
         body, foot = split_footnotes(lines, prof)
+        # a vertically set running head down the outer margin survives the
+        # margin-band test (it spans the page), so it is removed by column here
+        body = text_column(body, prof.left, prof.right)
+
+        page_figs = list((figures or {}).get(pt.page, []))
+        drop: set[int] = set()
+        for f in page_figs:
+            for l in body + foot:
+                if in_band(l, f) or (l.y1 > f.cap[0] - 1 and l.y0 < f.cap[1] + 1):
+                    drop.add(id(l))
+        # a table's cells are set in smaller type than the body, so the footnote
+        # splitter claims them before the figure bands are consulted; filter the
+        # footnote lines too or the table reappears as a run of gibberish notes
+        foot = [l for l in foot if id(l) not in drop]
+
+        seq: list[tuple[float, str, object]] = [
+            (l.y0, "line", l) for l in body if id(l) not in drop]
+        seq.extend((caption_y(f), "figure", f) for f in page_figs)
+        seq.sort(key=lambda t: t[0])
+
         blocks: list[Block] = []
-        for para in join_lines(body, prof):
-            if is_junk(para):
-                dropped += 1
-                continue
-            blocks.append(Block(kind="para", text=repair_text(para, repair),
-                                pages=[pt.page]))
+        run: list[Line] = []
+
+        def flush() -> None:
+            nonlocal run, dropped
+            if not run:
+                return
+            for para in join_lines(run, prof):
+                if is_junk(para):
+                    dropped += 1
+                    continue
+                blocks.append(Block(kind="para", text=repair_text(para, repair),
+                                    pages=[pt.page]))
+            run = []
+
+        for _y, what, payload in seq:
+            if what == "figure":
+                flush()
+                fig = payload
+                n_figures += 1
+                blocks.append(Block(kind="figure", text=fig.caption,
+                                    image=fig.image, label=fig.label,
+                                    pages=[pt.page]))
+            else:
+                run.append(payload)  # type: ignore[arg-type]
+        flush()
+
         for note in group_footnotes(foot):
             if is_junk(note):
                 dropped += 1
@@ -329,7 +381,7 @@ def assemble(pages: list[PageText], chapters: list[Chapter],
         per_page_blocks[pt.page] = blocks
 
     stats = {"pages": len(pages), "paragraphs": 0, "footnote_blocks": 0,
-             "dropped_junk": dropped}
+             "dropped_junk": dropped, "figures": n_figures}
     for c in chapters:
         for p in range(c.start_page, c.end_page + 1):
             c.blocks.extend(per_page_blocks.get(p, []))

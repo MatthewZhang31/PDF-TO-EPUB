@@ -123,6 +123,63 @@ reporting success, and always inspect the EPUB artefacts listed below.
    that share a page become **nav-only** entries pointing at the chapter that
    owns the page, so no page's text is ever emitted twice.
 
+## Tables and figures
+
+Scanned academic books lose their most important content if the graphics are
+dropped: a table's cells become gibberish paragraphs and the artwork vanishes.
+The pipeline therefore crops them out of the page scans and re-inserts them in
+the reading flow.
+
+| Flag | Effect |
+|---|---|
+| `--no-figures` | skip extraction entirely |
+| `--figure-dpi N` | render resolution for crops (default 300) |
+
+How it works (`p2e/figures.py`):
+
+1. **Find captions.** `表2.1` / `图3.1` mark a graphic. A line that merely cites
+   a figure is rejected by the *graphic-adjacency test*: a caption is printed
+   against its own artwork or table body, while a citation is surrounded by
+   running text. Text-only rules are deliberately narrow, because scanner OCR
+   deletes the space after a label (`图3.1比恩绘制的…`) and a real caption
+   routinely names other figures (`图6.7旋转图6.6中…`) — both would look like
+   citations to a naive rule.
+2. **Bound the graphic.** A table's body sits between its caption and the next
+   prose or caption; a figure's artwork sits between the previous prose and its
+   caption. When the scanner emitted *no* text for the artwork (common with
+   Acrobat) the bound is the page edge, and the ink trim finds the real extent.
+3. **Crop.** The band is rendered from the page at `--figure-dpi`, restricted
+   horizontally to the text column — which is what keeps the running head out —
+   and trimmed to the ink actually present. The crop is not padded, because a
+   band already ends exactly where the neighbouring caption begins.
+4. **Re-insert.** The graphic's lines are removed from the body text, its
+   caption becomes the `<figcaption>`, and a `<figure>` appears at the page
+   position. Table cells are also filtered out of the *footnote* block: they are
+   set in smaller type than the body, so the footnote splitter claims them
+   before the figure bands are consulted.
+
+Detection runs on **both** text sources and merges by band overlap, because each
+source mangles a different caption. On the reference book the OCR layer found 41
+graphics and the embedded layer 36; the union was 41.
+
+### Verifying figure output
+
+```powershell
+python "...\scripts\pdf2epub.py" validate --epub OUT\book.epub
+```
+
+`internal_refs` counts every figure reference. To see one rendered, extract the
+package and screenshot the chapter — **put the preview inside `OEBPS/text/`**,
+since `../images/` only resolves from there:
+
+```powershell
+python -c "import zipfile;zipfile.ZipFile(r'book.epub').extractall(r'%TEMP%\chk')"
+# copy the <figure>…</figure> region into %TEMP%\chk\OEBPS\text\preview.html
+& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --headless=new `
+  --screenshot="$env:TEMP\chk\fig.png" --window-size=800,1500 `
+  "file:///$env:TEMP/chk/OEBPS/text/preview.html"
+```
+
 ## Books with no PDF outline
 
 Many scans (anything run through a plain scanner rather than a publishing
@@ -324,16 +381,23 @@ no bookmarks, no title/author metadata)
 | TOC discovery | (automatic) | contents pages `[7, 8, 9, 10]`; folios read on 273 pages; **offset +10** (244 pages agree) |
 | TOC review | eyeballed `toc.json` | automatic rows were usable but chapter-level entries were damaged by OCR, so the contents were transcribed by hand into `chapters.json` (13 chapters, 33 sections, 57 subsections) |
 | OCR | `ocr --workers 6 --ocr-height 2530` | 438 pages in **74 min** (~10 s/page) |
-| assemble + build | `all --chapters chapters.json` | 85 spine sections + 18 nav-only, 3891 paragraphs, 384 061 chars |
-| validate | `build` | 93 entries, 90 XML documents all well-formed, **192 internal references resolved**, cover present, **0 issues** |
+| assemble + build | `all --chapters chapters.json` | 85 spine sections + 18 nav-only, 3311 paragraphs, 378 610 chars, **41 graphics** (6 tables, 35 figures) |
+| validate | `build` | 134 entries, 90 XML documents all well-formed, **233 internal references resolved**, cover present, **0 issues** |
 
-Two defects this book exposed, both now fixed and covered by the self-test:
+Four defects this book exposed, all now fixed and covered by the self-test:
 
 - `nav_only`/`href` were written to `book.json` but not read back, so every
   sub-entry became its own chapter and each shared page's text appeared once per
   entry — 103 chapter files and 18 694 duplicated characters.
 - `cover.xhtml` referenced `../images/cover.jpg`, correct only under `text/`.
   The package validated clean while the cover rendered as a broken image.
+- The **vertically set running head** down the outer margin survived the
+  margin-band test (it spans the whole page), so its characters were appended to
+  whatever paragraph was open — 412 spurious paragraphs and ~6 500 characters of
+  noise. Body lines are now restricted to the text column.
+- **Table cells leaked into the footnote block.** Cells are set smaller than the
+  body, so the footnote splitter claimed them before the figure bands were
+  consulted; 22 gibberish note blocks.
 
 ## Extending
 

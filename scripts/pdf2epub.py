@@ -215,6 +215,42 @@ def stage_assemble(args, rep: dict | None = None) -> dict:
     body = body_font_size(pages)
     step(f"assembling {len(pages)} pages (text-source={args.text_source}, body {body}pt)")
 
+    # tables and diagrams are cropped out of the page scans and re-inserted in
+    # the reading flow; without this the OCR text of a table becomes gibberish
+    # paragraphs and the artwork is lost entirely
+    from p2e.clean import global_margins, profile_page
+    from p2e.figures import crop_bands, merge_figures, plan_figures, save_figures
+    gl, gr = global_margins(pages, body)
+    profs = {p.page: profile_page(p, body, gl, gr) for p in pages}
+    found = plan_figures(pages, profs, body)
+
+    # The two text sources see different captions: one Mangles a label the other
+    # reads cleanly, so detect on both and merge by where the graphic sits.
+    if args.text_source != "embedded" and embedded:
+        emb_pages = [embedded[p] for p in sorted(embedded)]
+        gl2, gr2 = global_margins(emb_pages, body)
+        profs2 = {p.page: profile_page(p, body, gl2, gr2) for p in emb_pages}
+        alt = plan_figures(emb_pages, profs2, body)
+        before = sum(len(v) for v in found.values())
+        found = merge_figures(found, alt)
+        extra = sum(len(v) for v in found.values()) - before
+        if extra:
+            step(f"figures: {extra} more found in the embedded text layer")
+
+    figure_dir = os.path.join(out, "figures")
+    if found and not args.no_figures:
+        flat = [f for v in found.values() for f in v]
+        crop_bands(args.pdf, flat, (gl - 6, gr + 10), dpi=args.figure_dpi)
+        written = save_figures(found, figure_dir)
+        tables = sum(1 for f in flat if f.kind == "table")
+        step(f"figures: {len(flat)} cropped ({tables} tables, "
+             f"{len(flat) - tables} figures) from {len(found)} pages, "
+             f"at {args.figure_dpi} dpi")
+    elif found:
+        step(f"figures: {sum(len(v) for v in found.values())} found but "
+             f"--no-figures was given; dropping them")
+        found = {}
+
     # chapter skeleton
     if args.chapters:
         manual = read_json(args.chapters)
@@ -264,7 +300,8 @@ def stage_assemble(args, rep: dict | None = None) -> dict:
         warn("no outline or TOC found - the whole book became one chapter; "
              "pass --chapters headings.json to define sections")
 
-    book = assemble(pages, chapters, body, repair=not args.no_repair)
+    book = assemble(pages, chapters, body, repair=not args.no_repair,
+                    figures=found)
 
     write_json(p["book"], {
         "meta": {
@@ -278,6 +315,7 @@ def stage_assemble(args, rep: dict | None = None) -> dict:
             "mode": rep.get("mode"),
         },
         "chapters": [c.to_dict() for c in book.chapters],
+        "figures": {str(k): [f.to_dict() for f in v] for k, v in found.items()},
         "stats": book.stats,
     })
     write_json(p["toc_json"], toc_json(book.chapters))
@@ -324,7 +362,8 @@ def stage_build(args, book: dict | None = None) -> str:
             front_matter=c.get("front_matter", False),
             nav_only=c.get("nav_only", False),
             href=c.get("href", ""),
-            blocks=[Block(kind=b["kind"], text=b["text"], pages=b.get("pages", []))
+            blocks=[Block(kind=b["kind"], text=b["text"], pages=b.get("pages", []),
+                          image=b.get("image", ""), label=b.get("label", ""))
                     for b in c["blocks"]],
         ))
 
@@ -336,12 +375,14 @@ def stage_build(args, book: dict | None = None) -> str:
 
     ensure_cover(args)
     cover = p["cover"] if os.path.isfile(p["cover"]) else None
+    figure_dir = os.path.join(out, "figures")
     step(f"building EPUB: {title!r} by {author!r}, {len(chapters)} sections, "
          f"cover={'yes' if cover else 'no'}")
     build_epub(epub_path, chapters, title=title, author=author, lang=args.lang,
                publisher=args.publisher, date=args.date,
                source=meta.get("pdf", ""), cover_path=cover,
-               include_front_matter=args.include_front_matter)
+               include_front_matter=args.include_front_matter,
+               figure_dir=figure_dir)
 
     info = validate_epub(epub_path)
     write_json(os.path.join(out, "epub_check.json"), info)
@@ -436,6 +477,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="where page text comes from (default auto)")
         p.add_argument("--no-repair", action="store_true",
                        help="disable OCR punctuation repair")
+        p.add_argument("--no-figures", action="store_true",
+                       help="do not extract tables and diagrams from the scans")
+        p.add_argument("--figure-dpi", type=int, default=300,
+                       help="render resolution for figure crops (default 300)")
         p.add_argument("--include-front-matter", action="store_true",
                        help="keep cover/title/copyright/TOC pages in the spine")
 

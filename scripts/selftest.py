@@ -324,6 +324,98 @@ check("nav-only row creates no file of its own", len(_files2), 1)
 check_true("nav-only row links to its parent's file",
            'href="text/ch001.xhtml"' in _nav2 and "nav002.xhtml" not in _nav2, _nav2)
 
+# --------------------------------------------------------------------------
+print("\n[11] tables and figures: caption detection, cropping, packaging")
+from p2e.figures import (Figure, _looks_like_reference, find_captions,  # noqa: E402
+                         in_band, label_is_clean, normalize_label)
+
+check("label normalised across OCR spacing", normalize_label("图 2. 3"), "图2.3")
+check("table label normalised", normalize_label("表2 .4"), "表2.4")
+check("a label joined to another label is a citation",
+      _looks_like_reference("图6.6和图6.7 从几何学上显示了这个过程"), True)
+check("a real caption is not a citation", _looks_like_reference("图3.1 比恩绘制的Y轴"), False)
+check("OCR with no space after the label is still a caption",
+      _looks_like_reference("图3.1比恩绘制的Y轴的膝和X轴的压部的对比图表"), False)
+check("a caption naming another figure is still a caption",
+      _looks_like_reference("图6.7旋转图6.6中两条对应相同的四项智力测试矢量"), False)
+check("a truncated label merged with a year is unclean",
+      (label_is_clean("图2.1"), label_is_clean("图2.118")), (True, False))
+
+# a page: prose, then artwork (no text), then a figure caption at the bottom
+figpage: list[Line] = []
+for k in range(4):
+    figpage.append(L("这是一行足够长的正文用来占满整个文本栏的宽度。", 50, 60 + k * 20,
+                     330, 78 + k * 20, size=14.0))
+figpage.append(L("图3.1", 50, 400, 80, 412, size=10.0))
+figpage.append(L("比恩绘制的对比图表。", 90, 400, 250, 412, size=10.0))
+caps = find_captions(figpage, 280.0, 600.0)
+check("artwork with no text above is detected as a figure", len(caps), 1)
+check("its label is normalised", caps[0][1] if caps else None, "图3.1")
+check("the description fragment joins the caption",
+      len(caps[0][0]) if caps else 0, 2)
+
+# the same line, but embedded in running prose, must not be a caption. Neither
+# text rule fires here (one label, no joiner) -- the graphic-adjacency test is
+# what has to reject it.
+prosepage = [L("前面的正文，占满一行方便判断。", 50, 100, 330, 118, size=14.0),
+             L("图3.1 比恩绘制的对比图表说明，这句话其实是引用。", 50, 122, 330, 140, size=14.0),
+             L("后面的正文继续，同样占满一行。", 50, 144, 330, 162, size=14.0)]
+check("an inline citation is not a caption",
+      find_captions(prosepage, 280.0, 600.0), [])
+check("...even though no text-only rule rejects it",
+      _looks_like_reference("图3.1 比恩绘制的对比图表说明"), False)
+
+# a table: caption above, cells below
+tabpage = [L("表2.1", 100, 300, 130, 312, size=10.0),
+           L("莫顿的总结表格", 140, 300, 260, 312, size=10.0),
+           L("种族", 70, 320, 90, 332, size=10.0),
+           L("数量", 130, 320, 150, 332, size=10.0),
+           L("高加索人", 61, 335, 97, 347, size=10.0),
+           L("52", 133, 335, 145, 347, size=10.0)]
+tcaps = find_captions(tabpage, 280.0, 600.0)
+check("a table is detected from its caption", len(tcaps), 1)
+check("table kind", tcaps[0][2] if tcaps else None, "table")
+
+# band membership drives which lines are removed from the text
+f = Figure(page=1, kind="figure", label="图3.1", caption="图3.1 说明",
+           band=(80.0, 400.0), cap=(400.0, 412.0))
+check("a line inside the band is dropped", in_band(L("x", 50, 200, 100, 210), f), True)
+check("a line above the band is kept", in_band(L("x", 50, 60, 100, 78), f), False)
+
+# figure blocks must reach the package, and their images too
+import tempfile as _tf  # noqa: E402
+_figdir = _tf.mkdtemp(prefix="p2e-fig-")
+_img = Image.new("RGB", (400, 300), (200, 200, 200))
+_img.save(os.path.join(_figdir, "fig_p0001_1.jpg"), "JPEG")
+
+_chs3 = [Chapter(
+    id="ch001", title="第一章 导引", level=1, start_page=1, end_page=1,
+    blocks=[Block(kind="para", text="见图3.1。", pages=[1]),
+            Block(kind="figure", text="图3.1 比恩绘制的对比图表。",
+                  image="fig_p0001_1.jpg", label="图3.1", pages=[1]),
+            Block(kind="para", text="后面继续。", pages=[1])])]
+_chk3 = os.path.join(tmp, "figs.epub")
+build_epub(_chk3, _chs3, title="figs", author="", lang="zh", figure_dir=_figdir)
+with _zip2.ZipFile(_chk3) as _z4:
+    _names3 = _z4.namelist()
+    _xhtml3 = _z4.read("OEBPS/text/ch001.xhtml").decode("utf-8")
+    _opf3 = _z4.read("OEBPS/content.opf").decode("utf-8")
+check_true("figure image is packaged", "OEBPS/images/fig_p0001_1.jpg" in _names3,
+           str(_names3))
+check_true("figure image is in the manifest", "fig_p0001_1.jpg" in _opf3, _opf3)
+check_true("figure markup uses <figure>/<figcaption>",
+           "<figure class=\"fig\">" in _xhtml3 and "<figcaption>" in _xhtml3, _xhtml3)
+check_true("figure sits between the surrounding paragraphs",
+           _xhtml3.index("见图3.1。") < _xhtml3.index("<figure")
+           < _xhtml3.index("后面继续。"), _xhtml3)
+check("figure package validates", validate_epub(_chk3)["issues"], [])
+
+_d3 = Block(kind="figure", text="图3.1 说明", image="a.jpg", label="图3.1")
+check("figure block fields survive to_dict",
+      (Block(**{k: v for k, v in _d3.to_dict().items()}).image,
+       Block(**{k: v for k, v in _d3.to_dict().items()}).label),
+      ("a.jpg", "图3.1"))
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} check(s) FAILED:")

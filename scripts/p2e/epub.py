@@ -36,6 +36,12 @@ hr { border: 0; border-top: 1px solid #999; margin: 1.2em 0; }
 .cover { margin: 0; padding: 0; text-align: center; }
 .cover img { max-width: 100%; max-height: 100%; }
 .center { text-align: center; text-indent: 0; }
+figure.fig { margin: 1.2em 0; padding: 0; text-align: center; page-break-inside: avoid; }
+figure.fig img { max-width: 100%; height: auto; }
+figure.fig figcaption {
+  font-size: 0.85em; line-height: 1.45; color: #333;
+  text-align: left; text-indent: 0; margin-top: 0.45em;
+}
 """
 
 
@@ -58,24 +64,34 @@ def _xhtml(title: str, body: str, lang: str = "zh", css_href: str = "../styles/s
 
 
 def chapter_xhtml(ch: Chapter, lang: str, marker: str = "") -> str:
-    """Render a chapter. Written to OEBPS/text/, so ../ links reach OEBPS/."""
+    """Render a chapter. Written to OEBPS/text/, so ../ links reach OEBPS/.
+
+    Body text and figures are emitted in block order: a figure belongs where the
+    page had it, not collected at the end of the chapter. Footnotes are the one
+    exception -- they gather into a block at the bottom.
+    """
     parts: list[str] = []
     tag = "h1" if ch.level <= 1 else ("h2" if ch.level == 2 else "h3")
     anchor = f' id="{escape(ch.id)}"' if marker else ""
     parts.append(f"<{tag}{anchor}>{escape(ch.title)}</{tag}>")
-    paras: list[str] = []
     foots: list[str] = []
     for b in ch.blocks:
         text = b.text.strip()
+        if b.kind == "figure" and b.image:
+            parts.append(
+                '<figure class="fig">\n'
+                f'  <img src="../images/{escape(b.image)}" alt="{escape(b.label or text[:20])}"/>\n'
+                f'  <figcaption>{escape(text)}</figcaption>\n'
+                "</figure>")
+            continue
         if not text:
             continue
         if b.kind == "footnote":
             foots.append(f"<p>{escape(text)}</p>")
         elif b.kind == "heading":
-            paras.append(f"<h3>{escape(text)}</h3>")
+            parts.append(f"<h3>{escape(text)}</h3>")
         else:
-            paras.append(f"<p>{escape(text)}</p>")
-    parts.extend(paras)
+            parts.append(f"<p>{escape(text)}</p>")
     if foots:
         parts.append('<div class="footnotes">')
         parts.append("<hr/>")
@@ -208,9 +224,20 @@ def ncx_xml(chapters: list[Chapter], title: str, book_id: str) -> str:
     )
 
 
+def figure_images(chapters: list[Chapter]) -> list[str]:
+    """Figure filenames referenced by the given chapters, in a stable order."""
+    seen: list[str] = []
+    for ch in chapters:
+        for b in ch.blocks:
+            if b.kind == "figure" and b.image and b.image not in seen:
+                seen.append(b.image)
+    return seen
+
+
 def opf_xml(chapters: list[Chapter], *, title: str, author: str, lang: str,
             book_id: str, publisher: str = "", date: str = "",
-            has_cover: bool = True, source: str = "") -> str:
+            has_cover: bool = True, source: str = "",
+            figures: list[str] | None = None) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     meta = [
         f'    <dc:identifier id="bookid">{escape(book_id)}</dc:identifier>',
@@ -237,6 +264,8 @@ def opf_xml(chapters: list[Chapter], *, title: str, author: str, lang: str,
     if has_cover:
         manifest.append('    <item id="cover-image" href="images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>')
         manifest.append('    <item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>')
+    for n, name in enumerate(figures or [], 1):
+        manifest.append(f'    <item id="fig{n:03d}" href="images/{name}" media-type="image/jpeg"/>')
     for ch in chapters:
         manifest.append(f'    <item id="{ch.id}" href="text/{ch.id}.xhtml" media-type="application/xhtml+xml"/>')
 
@@ -281,7 +310,8 @@ def build_epub(out_path: str, chapters: list[Chapter], *, title: str, author: st
                lang: str = "zh", book_id: Optional[str] = None,
                publisher: str = "", date: str = "", source: str = "",
                cover_path: Optional[str] = None, css: str = DEFAULT_CSS,
-               include_front_matter: bool = False) -> str:
+               include_front_matter: bool = False,
+               figure_dir: Optional[str] = None) -> str:
     """Write the EPUB file and return its path."""
     book_id = book_id or f"urn:uuid:{uuid.uuid4()}"
 
@@ -297,6 +327,14 @@ def build_epub(out_path: str, chapters: list[Chapter], *, title: str, author: st
         nav_items = packaged
     has_cover = bool(cover_path and os.path.isfile(cover_path))
 
+    # figures referenced by the packaged chapters, and actually present on disk
+    fig_names = [n for n in figure_images(packaged)
+                 if figure_dir and os.path.isfile(os.path.join(figure_dir, n))]
+    missing = [n for n in figure_images(packaged) if n not in fig_names]
+    if missing:
+        warn(f"{len(missing)} figure image(s) missing from {figure_dir}: "
+             f"{', '.join(missing[:3])}{' …' if len(missing) > 3 else ''}")
+
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     tmp = out_path + ".tmp"
     if os.path.exists(tmp):
@@ -311,7 +349,8 @@ def build_epub(out_path: str, chapters: list[Chapter], *, title: str, author: st
         z.writestr("META-INF/container.xml", CONTAINER_XML, zipfile.ZIP_DEFLATED)
         z.writestr("OEBPS/content.opf", opf_xml(
             packaged, title=title, author=author, lang=lang, book_id=book_id,
-            publisher=publisher, date=date, has_cover=has_cover, source=source),
+            publisher=publisher, date=date, has_cover=has_cover, source=source,
+            figures=fig_names),
             zipfile.ZIP_DEFLATED)
         z.writestr("OEBPS/nav.xhtml", nav_xhtml(nav_items, lang, "目录"),
                    zipfile.ZIP_DEFLATED)
@@ -331,6 +370,9 @@ def build_epub(out_path: str, chapters: list[Chapter], *, title: str, author: st
                                    image_size=size),
                        zipfile.ZIP_DEFLATED)
             z.write(cover_path, "OEBPS/images/cover.jpg", zipfile.ZIP_DEFLATED)
+        for name in fig_names:
+            z.write(os.path.join(figure_dir, name), f"OEBPS/images/{name}",
+                    zipfile.ZIP_DEFLATED)
         for ch in packaged:
             z.writestr(f"OEBPS/text/{ch.id}.xhtml",
                        chapter_xhtml(ch, lang, marker="true"), zipfile.ZIP_DEFLATED)
