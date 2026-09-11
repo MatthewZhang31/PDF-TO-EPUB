@@ -13,7 +13,7 @@ and a real, navigable table of contents.
 
 ```powershell
 # 1) 克隆到 DSH 的用户级 skill 目录（路径是约定，不要改）
-git clone <repo-url> "$env:USERPROFILE\.dsh\skills\pdf-to-epub"
+git clone https://github.com/MatthewZhang31/PDF-TO-EPUB.git "$env:USERPROFILE\.dsh\skills\pdf-to-epub"
 
 # 2) 一键安装依赖并自检
 powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.dsh\skills\pdf-to-epub\install.ps1"
@@ -21,6 +21,47 @@ powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.dsh\skills\pdf-to-ep
 
 不需要任何注册步骤：DSH 会扫描 `~/.dsh/skills/<名字>/SKILL.md`，新会话自动就能看到
 `pdf-to-epub` 这个 skill。
+
+### 注意事项
+
+**① 克隆路径不能改。** DSH 只从 `$DSH_HOME/skills/`（默认 `~/.dsh/skills/`）发现 skill，
+克隆到别处命令行仍可用，但不会自动出现在会话里。如果你的 `DSH_HOME` 环境变量指向别的位置，
+要克隆到 `$DSH_HOME\skills\pdf-to-epub`——`install.ps1` 会检查并给出提示。
+
+**② 这台电脑要先装好 DSH**，并装 Python 3.10+。安装脚本优先用 `python`，
+找不到就回退到 `py -3`（Windows 官方安装器有时只注册后者）。
+
+**③ pip 走镜像。** 默认 PyPI 在国内网络会超时，脚本默认用清华镜像。换了网络环境
+（比如在国外）可以改：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1 -Mirror https://pypi.org/simple
+```
+
+依赖已装好时用 `-SkipInstall` 跳过安装，只做自检。
+
+**④ 转换产物不会跟着仓库走——这是最容易忽略的一点。** `.gitignore` 出于版权原因
+排除了所有输出（EPUB、封面、图表裁切、`ocr.json` 等）。所以新电脑上：
+
+- 之前转好的 EPUB **不在**新电脑上，需要自己另外拷贝（网盘/私有仓库）
+- 重新转同一本书时 **OCR 要重跑**。这本书花了 74 分钟；如果不想重跑，
+  把旧电脑的整个 `out\<书名>\` 目录拷过去即可（其中 `ocr.json` 就是 OCR 缓存，
+  `assemble` 和 `build` 会直接复用）
+
+**⑤ 执行策略。** 脚本必须加 `-ExecutionPolicy Bypass`，否则 PowerShell 会拒绝运行。
+
+**⑥ 控制台编码。** Windows 控制台默认是 cp936，中文输出会崩。每次调用前设
+`$env:PYTHONIOENCODING="utf-8"`（`install.ps1` 内部已设，但你自己敲命令时要设）。
+
+**⑦ Git 凭据要重新配。** 这台机器上推送用的是 Windows 凭据管理器里的凭据，不会同步。
+新电脑首次 `git push` 会要求登录。如果新电脑上 GitHub 连不上，见
+[`references/troubleshooting.md`](references/troubleshooting.md) 里的本地代理方案——
+注意那个代理设置写在 `.git/config`（机器本地），**同样不会同步过去**。
+
+**⑧ 目标目录要为空。** `git clone` 要求目标目录不存在或为空，别预先建好带文件的目录。
+
+**⑨ Python 太新可能缺 wheel。** `onnxruntime` 对新版本 Python 的支持会滞后，
+若装不上 OCR 依赖，先用主流程（有文本层的 PDF 不需要 OCR），或换 Python 3.11/3.12。
 
 ## 日常使用
 
