@@ -341,9 +341,19 @@ def assemble(pages: list[PageText], chapters: list[Chapter],
                          stats=stats)
 
 
+_CHAPTER_LABEL_RE = re.compile(r"^[【\[（(]?\s*第\s*[一二三四五六七八九十百零〇\d]+\s*[章篇部]\s*[】\]）)]?$")
+
+
 def _drop_repeated_title(c: Chapter) -> list[Block]:
-    """Remove a leading block that merely repeats the chapter heading."""
+    """Remove leading blocks that merely restate the chapter heading.
+
+    Covers both a copy of the full title and the bare ``【第三章】`` label that
+    chapter openers in scanned books carry above the epigraph.
+    """
     blocks = [b for b in c.blocks if b.text.strip()]
+    while blocks and blocks[0].kind == "para" \
+            and _CHAPTER_LABEL_RE.match(squeeze(blocks[0].text)):
+        blocks = blocks[1:]
     if not blocks:
         return blocks
     head = blocks[0]
