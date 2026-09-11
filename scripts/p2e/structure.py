@@ -29,12 +29,21 @@ class Chapter:
     end_page: int = 0
     blocks: list[Block] = field(default_factory=list)
     front_matter: bool = False
+    # a nav-only entry has no file of its own: it points at its parent's file
+    # and is excluded from the spine. Used for contents rows that share a page
+    # with an earlier entry.
+    nav_only: bool = False
+    href: str = ""
+
+    def target(self) -> str:
+        return self.href or f"text/{self.id}.xhtml"
 
     def to_dict(self) -> dict:
         return {
             "id": self.id, "title": self.title, "level": self.level,
             "start_page": self.start_page, "end_page": self.end_page,
             "front_matter": self.front_matter,
+            "nav_only": self.nav_only, "href": self.href,
             "blocks": [b.to_dict() for b in self.blocks],
         }
 
@@ -57,22 +66,9 @@ def resolve_chapters_from_outline(outline: list[dict], page_count: int) -> list[
     if not entries:
         return []
     entries.sort(key=lambda o: (o["page"], o["level"]))
-    chapters: list[Chapter] = []
-    for i, o in enumerate(entries):
-        start = max(1, min(int(o["page"]), page_count))
-        nxt = entries[i + 1]["page"] if i + 1 < len(entries) else page_count + 1
-        end = max(start, min(int(nxt) - 1, page_count))
-        title = squeeze(o["title"])
-        chapters.append(Chapter(
-            id=f"ch{i + 1:03d}", title=title, level=int(o.get("level", 1)),
-            start_page=start, end_page=end,
-            front_matter=is_front_matter_title(title),
-        ))
-    # An outline page number may point one past the real start; pull a chapter
-    # back when its own title text is found on an earlier page.
-    for c in chapters:
-        c.start_page = max(1, c.start_page)
-    return chapters
+    rows = [{"title": o["title"], "page": int(o["page"]),
+             "level": int(o.get("level", 1))} for o in entries]
+    return _chapters_from_rows(rows, page_count)
 
 
 def locate_title_page(pages: list[PageText], title: str,
@@ -90,40 +86,142 @@ def locate_title_page(pages: list[PageText], title: str,
     return None
 
 
+def offset_is_usable(pages: list[PageText], entries: list[dict],
+                     page_count: int, offset: int, floor: float = 0.25) -> bool:
+    """Does ``printed + offset`` land on pages that actually carry the titles?
+
+    A published offset is only worth trusting book-wide, so it is validated
+    globally first: if too few rows land on a page whose text carries the title,
+    the offset is wrong (or the book has no folios) and the caller must fall
+    back to searching the body for each title.
+    """
+    rows = [e for e in entries if isinstance(e.get("printed_page"), int)
+            and e["printed_page"] > 0]
+    if not rows:
+        return False
+    hits = 0
+    for e in rows:
+        cand = e["printed_page"] + offset
+        if 1 <= cand <= page_count and _page_mentions(pages, cand, str(e.get("title", ""))):
+            hits += 1
+    return hits >= max(1, int(len(rows) * floor))
+
+
 def resolve_chapters_from_toc_entries(pages: list[PageText], entries: list[dict],
-                                      page_count: int) -> list[Chapter]:
-    """Fallback: locate each printed-TOC entry by searching the body text."""
+                                      page_count: int, offset: int = 0) -> list[Chapter]:
+    """Turn printed contents rows into chapters.
+
+    Printed page numbers are mapped to physical pages with ``offset``, derived
+    from the folios printed on each page. The offset is validated against the
+    whole contents list before being trusted; when it does not hold, each row
+    falls back to locating its title in the body text.
+
+    Rows that land on a page an earlier row already owns become nav-only entries
+    pointing at that chapter's file, so no page's text is ever emitted twice.
+    """
+    use_offset = offset_is_usable(pages, entries, page_count, offset)
     chapters: list[Chapter] = []
+    owner: dict[int, Chapter] = {}
     cursor = 1
+
     for i, e in enumerate(entries):
-        found = locate_title_page(pages, e["title"], cursor, page_count)
-        if found is None:
+        title = squeeze(str(e.get("title", "")))
+        if not title:
             continue
-        chapters.append(Chapter(
-            id=f"ch{i + 1:03d}", title=squeeze(e["title"]), level=1,
-            start_page=found, end_page=page_count,
-            front_matter=is_front_matter_title(e["title"]),
-        ))
-        cursor = found + 1
-    for i, c in enumerate(chapters):
-        c.end_page = (chapters[i + 1].start_page - 1) if i + 1 < len(chapters) else page_count
+        printed = e.get("printed_page")
+        physical = None
+        if use_offset and isinstance(printed, int) and printed > 0:
+            cand = printed + offset
+            if 1 <= cand <= page_count:
+                physical = cand
+        if physical is None:
+            physical = locate_title_page(pages, title, cursor, page_count)
+        if physical is None:
+            continue
+
+        level = int(e.get("level", 1) or 1)
+        if physical in owner:
+            parent = owner[physical]
+            chapters.append(Chapter(
+                id=f"nav{i + 1:03d}", title=title, level=max(level, parent.level + 1),
+                start_page=physical, end_page=physical,
+                front_matter=parent.front_matter,
+                nav_only=True, href=parent.target()))
+            continue
+
+        ch = Chapter(
+            id=f"ch{i + 1:03d}", title=title, level=level,
+            start_page=physical, end_page=page_count,
+            front_matter=is_front_matter_title(title),
+        )
+        chapters.append(ch)
+        owner[physical] = ch
+        cursor = physical + 1
+
+    spine = [c for c in chapters if not c.nav_only]
+    for i, c in enumerate(spine):
+        c.end_page = (spine[i + 1].start_page - 1) if i + 1 < len(spine) else page_count
+        c.end_page = max(c.start_page, c.end_page)
+    return chapters
+
+
+def _page_mentions(pages: list[PageText], page_no: int, title: str) -> bool:
+    """Does the page's first few lines carry this title?"""
+    pt = next((p for p in pages if p.page == page_no), None)
+    if pt is None:
+        return False
+    key = _norm_title(title)
+    if len(key) < 2:
+        return True
+    blob = _norm_title("\n".join(l.text for l in pt.lines[:8]))
+    return key in blob or _ratio(key, blob[:max(len(key) * 3, 12)]) >= 0.6
+
+
+def _chapters_from_rows(rows: list[dict], page_count: int) -> list[Chapter]:
+    """Build chapters from ordered {title, page, level} rows.
+
+    Two rows that name the same page describe subsections of one printed page.
+    Only the first gets a file and a spine slot; the rest become nav-only
+    entries pointing at it, so the page's text is never emitted twice.
+
+    Rows are sorted by page with a *stable* sort, so rows supplied out of order
+    cannot produce overlapping page ranges, while the given order is preserved
+    among rows that share a page.
+    """
+    rows = sorted(rows, key=lambda r: int(r.get("page", 1)))
+    chapters: list[Chapter] = []
+    owner: dict[int, Chapter] = {}
+    for i, r in enumerate(rows):
+        title = squeeze(str(r.get("title", "")))
+        if not title:
+            continue
+        start = max(1, min(int(r.get("page", 1)), page_count))
+        level = max(1, int(r.get("level", 1) or 1))
+        front = bool(r.get("front_matter", is_front_matter_title(title)))
+
+        if start in owner:
+            parent = owner[start]
+            chapters.append(Chapter(
+                id=f"nav{i + 1:03d}", title=title,
+                level=max(level, parent.level + 1),
+                start_page=start, end_page=start, front_matter=parent.front_matter,
+                nav_only=True, href=parent.target()))
+            continue
+
+        ch = Chapter(id=f"ch{i + 1:03d}", title=title, level=level,
+                     start_page=start, end_page=page_count, front_matter=front)
+        chapters.append(ch)
+        owner[start] = ch
+
+    spine = [c for c in chapters if not c.nav_only]
+    for i, c in enumerate(spine):
+        c.end_page = (spine[i + 1].start_page - 1) if i + 1 < len(spine) else page_count
         c.end_page = max(c.start_page, c.end_page)
     return chapters
 
 
 def apply_manual_chapters(manual: list[dict], page_count: int) -> list[Chapter]:
-    chapters: list[Chapter] = []
-    for i, m in enumerate(manual):
-        chapters.append(Chapter(
-            id=f"ch{i + 1:03d}", title=squeeze(str(m["title"])),
-            level=int(m.get("level", 1)),
-            start_page=int(m["page"]), end_page=page_count,
-            front_matter=bool(m.get("front_matter", is_front_matter_title(str(m["title"])))),
-        ))
-    for i, c in enumerate(chapters):
-        c.end_page = (chapters[i + 1].start_page - 1) if i + 1 < len(chapters) else page_count
-        c.end_page = max(c.start_page, c.end_page)
-    return chapters
+    return _chapters_from_rows(manual, page_count)
 
 
 # --------------------------------------------------------------------------

@@ -17,8 +17,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from p2e.util import (log, read_json, setup_console, slugify, step, warn,
-                      write_json)  # noqa: E402
+from p2e.util import (PageText, log, read_json, setup_console, slugify, step,
+                      warn, write_json)  # noqa: E402
 
 setup_console()
 
@@ -224,9 +224,39 @@ def stage_assemble(args, rep: dict | None = None) -> dict:
         chapters = resolve_chapters_from_outline(rep["outline"], page_count)
         step(f"chapters: {len(chapters)} (from PDF outline)")
     else:
-        entries = parse_toc_lines(pages, rep.get("toc_pages") or [])
-        chapters = resolve_chapters_from_toc_entries(pages, entries, page_count)
-        step(f"chapters: {len(chapters)} (from printed TOC pages)")
+        toc_pages = rep.get("toc_pages") or []
+        offset = 0
+        entries = []
+        if toc_pages:
+            from p2e.clean import (detect_folios, estimate_page_offset,
+                                   frequent_margin_strings, global_margins,
+                                   profile_page, remove_head_substrings,
+                                   strip_running_heads)
+            gl, gr = global_margins(pages, body)
+            profs = {p.page: profile_page(p, body, gl, gr) for p in pages}
+            folios = detect_folios(pages, profs)
+            offset = estimate_page_offset(folios)
+            # contents rows must be read without the running head, which would
+            # otherwise be glued onto the first title on the page
+            heads = frequent_margin_strings(pages, profs, body)
+            stripped = strip_running_heads(pages, profs, body)
+            clean_pages = []
+            for p in pages:
+                lines = remove_head_substrings(stripped.get(p.page, p.lines), heads)
+                clean_pages.append(PageText(
+                    page=p.page, width=p.width, height=p.height,
+                    lines=lines, source=p.source))
+            entries = parse_toc_lines(clean_pages, toc_pages)
+            from p2e.analyze import assign_toc_levels
+            levels = assign_toc_levels(entries)
+            for e, lv in zip(entries, levels):
+                e["level"] = lv
+            step(f"printed folios on {len(folios)} pages -> page offset {offset:+d}; "
+                 f"{len(entries)} TOC rows, {len(set(levels))} indent level(s)")
+        chapters = resolve_chapters_from_toc_entries(pages, entries, page_count, offset)
+        spine_n = sum(1 for c in chapters if not c.nav_only)
+        step(f"chapters: {spine_n} sections + {len(chapters) - spine_n} nav-only "
+             f"sub-entries (from printed TOC pages {toc_pages})")
 
     if not chapters:
         chapters = apply_manual_chapters(

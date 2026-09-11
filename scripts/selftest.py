@@ -221,6 +221,78 @@ except OSError:
     pass
 
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+print("\n[9] printed folios: offset estimation and TOC page mapping")
+from p2e.clean import (detect_folios, estimate_page_offset, global_margins,  # noqa: E402
+                       profile_page)
+from p2e.util import PageText  # noqa: E402
+
+# a body page whose printed folio (73) sits in the bottom margin, offset +10
+def body_page(phys, printed, extra="正文内容在这里，用来撑出版面结构。"):
+    pt = PageText(page=phys, width=400, height=600)
+    for k in range(6):
+        pt.lines.append(L(f"这是第{k}行正文内容" + extra, 50, 100 + k * 20, 350,
+                          118 + k * 20, size=14.0))
+    pt.lines.append(L(str(printed), 190, 560, 210, 574, size=9.0))
+    return pt
+
+sample = [body_page(80 + i, 70 + i) for i in range(6)]
+gl, gr = global_margins(sample, 14.0)
+profs = {p.page: profile_page(p, 14.0, gl, gr) for p in sample}
+folios = detect_folios(sample, profs)
+check("folios detected on every body page", folios, {80: 70, 81: 71, 82: 72,
+                                                     83: 73, 84: 74, 85: 75})
+check("offset is physical - printed", estimate_page_offset(folios), 10)
+check("a single page is not enough to trust an offset",
+      estimate_page_offset({5: 1}), 0)
+check("double-printed folios with the same value are accepted",
+      detect_folios([body_page(83, 73)], {p.page: profile_page(p, 14.0, 50.0, 350.0)
+                                          for p in [body_page(83, 73)]}),
+      {83: 73})
+
+# a printed TOC row maps through the offset to the physical page
+from p2e.analyze import assign_toc_levels  # noqa: E402
+from p2e.structure import resolve_chapters_from_toc_entries  # noqa: E402
+
+pages = [body_page(80 + i, 70 + i) for i in range(6)]
+pages[2].lines.insert(0, L("第三章 头部测量", 50, 60, 200, 80, size=18.0))
+n_pages = max(p.page for p in pages)
+rows = [{"title": "第三章 头部测量", "printed_page": 72, "x0": 47.0}]
+chs = resolve_chapters_from_toc_entries(pages, rows, n_pages, offset=10)
+check("TOC row resolved through the offset", [c.start_page for c in chs], [82])
+check("title verified against the page text", chs[0].title, "第三章 头部测量")
+
+# rows sharing a physical page become nav-only and must not duplicate text
+rows2 = [{"title": "第三章 头部测量", "printed_page": 72, "x0": 47.0},
+         {"title": "数字的诱惑", "printed_page": 72, "x0": 90.0}]
+levels = assign_toc_levels(rows2)
+for e, lv in zip(rows2, levels):
+    e["level"] = lv
+chs2 = resolve_chapters_from_toc_entries(pages, rows2, n_pages, offset=10)
+check("shared page yields one spine chapter + one nav-only entry",
+      (sum(1 for c in chs2 if not c.nav_only), sum(1 for c in chs2 if c.nav_only)),
+      (1, 1))
+check_true("nav-only entry points at its parent's file",
+           chs2[1].nav_only and chs2[1].target() == chs2[0].target(),
+           f"{chs2[1].nav_only} {chs2[1].target()} vs {chs2[0].target()}")
+check_true("a deeper indent is inferred as a deeper level",
+           levels[1] >= levels[0], str(levels))
+
+# nav-only entries must stay out of the spine but appear in the nav
+import zipfile as _zip2  # noqa: E402
+_chk = os.path.join(tmp, "navonly.epub")
+build_epub(_chk, chs2, title="nav-only", author="", lang="zh")
+with _zip2.ZipFile(_chk) as _z2:
+    _names = _z2.namelist()
+    _nav = _z2.read("OEBPS/nav.xhtml").decode("utf-8")
+    _opf2 = _z2.read("OEBPS/content.opf").decode("utf-8")
+check("only the spine chapter gets a file",
+      sum(1 for n in _names if n.startswith("OEBPS/text/")), 1)
+check_true("nav lists both titles", "第三章 头部测量" in _nav and "数字的诱惑" in _nav)
+check_true("nav-only title is absent from the OPF manifest",
+           _opf2.count("application/xhtml+xml") == 2, _opf2)
+check("the nav-only package validates", validate_epub(_chk)["issues"], [])
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} check(s) FAILED:")

@@ -114,10 +114,70 @@ reporting success, and always inspect the EPUB artefacts listed below.
 3. **Cover** comes from `analysis.json:cover_page` (page 1 whenever page 1 is a
    full-page image). Override with `--cover-page N` when the first page is a
    library stamp, a barcode sheet, or a blank.
-4. **TOC** is taken from the PDF's embedded outline when one exists, because it
-   matches the printed contents page. With no outline the tool OCRs the printed
-   TOC page and locates each entry in the body text.
-5. **Chapter text** is the concatenation of the pages each section spans.
+4. **TOC** comes from the PDF's embedded outline when one exists, because it
+   matches the printed contents page. When there is no outline, the printed
+   contents page is OCR'd and each row's *printed page number* is mapped to a
+   physical page through the folio offset — far more reliable than searching
+   the body for each title. See "Books with no PDF outline" below.
+5. **Chapter text** is the concatenation of the pages each section spans. Rows
+   that share a page become **nav-only** entries pointing at the chapter that
+   owns the page, so no page's text is ever emitted twice.
+
+## Books with no PDF outline
+
+Many scans (anything run through a plain scanner rather than a publishing
+pipeline) have no bookmarks at all. The recovered TOC then rests on two derived
+facts, both printed in `analysis.json` / the run log:
+
+1. **The printed contents page** — `detect_toc_pages` searches only the front
+   region of the book, because body pages full of numbered lists otherwise score
+   just as highly. It then follows the heading through contiguous pages only.
+2. **The folio offset** — `detect_folios` reads the lone number in each page's
+   margin, and `estimate_page_offset` takes the most common
+   `physical − printed` difference. A contents row's printed number plus that
+   offset gives its physical page.
+
+The offset is validated against the whole contents list before being trusted
+(`offset_is_usable`): if too few rows land on pages that actually carry their
+title, the offset is discarded and each title is searched for in the body
+instead. The run log states which happened:
+
+```
+printed folios on 273 pages -> page offset +10; 89 TOC rows, 3 indent level(s)
+```
+
+### When to transcribe the contents by hand
+
+Automatic extraction is good but not perfect: OCR mangles headings, and a
+running head that the scanner merged onto the same line as a title will be glued
+onto it. **Read `toc.json` and judge.** If chapter-level entries are wrong or
+missing, render the contents pages, read them yourself, and supply
+`--chapters`:
+
+```powershell
+python "...\scripts\pdf2epub.py" extract --pdf X.pdf --out OUT --pages 7-10 --dpi 220
+# read OUT\pages\page_0007.png … page_0010.png
+python "...\scripts\pdf2epub.py" all --pdf X.pdf --out OUT --chapters chapters.json
+```
+
+The supplementary script that produced `chapters.json` for the reference book
+keeps the transcription in a compact `"<level> <printed page> <title>"` block
+and applies the offset in code — reuse that shape and let the generator reject
+non-monotonic input.
+
+`--chapters` rows are **physical** pages, `level` 1–3 nests the nav, and rows
+sharing a page are de-duplicated automatically.
+
+### Working with the extracted contents
+
+```powershell
+python "...\scripts\pdf2epub.py" validate --epub OUT\book.epub
+```
+
+`epub_check.json` reports `internal_refs` (every link/image/CDATA reference
+resolved), `xml_documents`, and any issue. Nav-only rows make the nav deeper
+than the spine, which is expected: `chapters` (manifest count) is larger than
+`spine_items`.
 
 ## Stage caches and stale artefacts
 

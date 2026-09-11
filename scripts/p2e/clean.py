@@ -278,6 +278,103 @@ def group_footnotes(lines: list[Line]) -> list[str]:
     return groups
 
 
+# --------------------------------------------------------------------------
+# inline running heads
+# --------------------------------------------------------------------------
+
+def frequent_margin_strings(pages: list[PageText], profiles: dict[int, PageProfile],
+                            body_size: float, min_pages: int = 3) -> set[str]:
+    """Recurring short strings that sit in a margin: running heads and folios.
+
+    Needed separately from :func:`strip_running_heads` because a scanner often
+    merges the running head onto the *same* text line as real content, where
+    dropping whole lines cannot help and the string has to be cut out.
+    """
+    counts: dict[str, int] = {}
+    for pt in pages:
+        prof = profiles.get(pt.page)
+        if prof is None:
+            continue
+        band = max(body_size * 1.2, 26)
+        for l in pt.lines:
+            if not (l.y1 < prof.top + band or l.y0 > prof.bottom - band):
+                continue
+            key = _dedent_key(l.text)
+            if key and 2 <= len(key) <= 40:
+                counts[key] = counts.get(key, 0) + 1
+    return {k for k, v in counts.items() if v >= min_pages}
+
+
+def remove_head_substrings(lines: list[Line], heads: set[str]) -> list[Line]:
+    """Cut recurring running-head text out of the middle of a line."""
+    if not heads:
+        return lines
+    out: list[Line] = []
+    for l in lines:
+        t = l.text
+        changed = False
+        for h in heads:
+            if h and h in t:
+                t = t.replace(h, "")
+                changed = True
+        if not changed:
+            out.append(l)
+            continue
+        t = squeeze(t)
+        if t:
+            out.append(Line(text=t, x0=l.x0, y0=l.y0, x1=l.x1, y1=l.y1,
+                            size=l.size, score=l.score, source=l.source))
+    return out
+
+
+# --------------------------------------------------------------------------
+# printed folios and the printed->physical page offset
+# --------------------------------------------------------------------------
+
+_FOLIO_RE = re.compile(r"^[\[\]()（）【】·•\-–—\s]*(\d{1,4})[\[\]()（）【】·•\-–—\s]*$")
+
+
+def detect_folios(pages: list[PageText],
+                  profiles: dict[int, PageProfile]) -> dict[int, int]:
+    """Map physical page number -> the folio printed on it.
+
+    Scanned books set the folio as a lone number in the top or bottom margin.
+    Knowing the printed number of each page is what makes a printed table of
+    contents usable: its entries carry printed page numbers, and the difference
+    between the two is a constant for the whole book.
+    """
+    out: dict[int, int] = {}
+    for pt in pages:
+        prof = profiles.get(pt.page)
+        if prof is None or len(pt.lines) < 3:
+            continue
+        band = max(prof.body_size * 2.0, 18.0)
+        cands: list[int] = []
+        for l in pt.lines:
+            m = _FOLIO_RE.match(squeeze(l.text))
+            if not m:
+                continue
+            in_top = l.y1 <= prof.top + band
+            in_bottom = l.y0 >= prof.bottom - band
+            if in_top or in_bottom:
+                cands.append(int(m.group(1)))
+        if cands and len(set(cands)) == 1:
+            out[pt.page] = cands[0]
+    return out
+
+
+def estimate_page_offset(folios: dict[int, int], min_support: int = 3) -> int:
+    """The most common (physical - printed) difference across the book."""
+    if not folios:
+        return 0
+    diffs: dict[int, int] = {}
+    for phys, printed in folios.items():
+        d = phys - printed
+        diffs[d] = diffs.get(d, 0) + 1
+    best, n = max(diffs.items(), key=lambda kv: kv[1])
+    return best if n >= min_support else 0
+
+
 def is_heading_like(text: str, line: Line, prof: PageProfile) -> bool:
     """Cheap heading test used to *suggest* candidates (never authoritative)."""
     t = squeeze(text)

@@ -144,7 +144,7 @@ def _nav_ol(chapters: list[Chapter], depths: list[int],
     i = start
     while i < len(chapters) and depths[i] == level:
         ch = chapters[i]
-        out.append(f'<li><a href="text/{ch.id}.xhtml">{escape(ch.title)}</a>')
+        out.append(f'<li><a href="{ch.target()}">{escape(ch.title)}</a>')
         i += 1
         if i < len(chapters) and depths[i] > level:
             sub, i = _nav_ol(chapters, depths, i, depths[i])
@@ -158,12 +158,13 @@ def nav_xhtml(chapters: list[Chapter], lang: str, title: str) -> str:
     """EPUB 3 navigation document: the toc plus a landmarks list.
 
     Written to OEBPS/nav.xhtml, so its stylesheet link is ``styles/style.css``
-    while its links into the text are ``text/<id>.xhtml``.
+    while its links into the text are ``text/<id>.xhtml``. Nav-only entries from
+    a printed contents page point at the file of the chapter that owns the page.
     """
     if chapters:
         depths = normalize_depths(chapters)
         toc, _ = _nav_ol(chapters, depths, 0, 1)
-        first = chapters[0].id
+        first = chapters[0].target()
     else:
         toc = "<ol></ol>"
         first = ""
@@ -173,7 +174,7 @@ def nav_xhtml(chapters: list[Chapter], lang: str, title: str) -> str:
     ]
     if first:
         landmarks.append(
-            f'<li><a epub:type="bodymatter" href="text/{first}.xhtml">正文</a></li>')
+            f'<li><a epub:type="bodymatter" href="{first}">正文</a></li>')
 
     body = (
         f'<nav epub:type="toc" id="toc">\n<h1>{escape(title)}</h1>\n{toc}\n</nav>\n'
@@ -250,7 +251,7 @@ def opf_xml(chapters: list[Chapter], *, title: str, author: str, lang: str,
     if has_cover:
         guide.append('    <reference type="cover" title="Cover" href="cover.xhtml"/>')
     if chapters:
-        guide.append(f'    <reference type="text" title="正文" href="text/{chapters[0].id}.xhtml"/>')
+        guide.append(f'    <reference type="text" title="正文" href="{chapters[0].target()}"/>')
 
     return (
         '<?xml version="1.0" encoding="utf-8"?>\n'
@@ -283,9 +284,17 @@ def build_epub(out_path: str, chapters: list[Chapter], *, title: str, author: st
                include_front_matter: bool = False) -> str:
     """Write the EPUB file and return its path."""
     book_id = book_id or f"urn:uuid:{uuid.uuid4()}"
-    spine_chapters = [c for c in chapters if include_front_matter or not c.front_matter]
-    if not spine_chapters:
-        spine_chapters = chapters
+
+    def visible(ch: Chapter) -> bool:
+        return include_front_matter or not ch.front_matter
+
+    # nav-only rows from a printed contents page share their parent's file and
+    # must not appear in the manifest or the spine
+    nav_items = [c for c in chapters if visible(c)]
+    packaged = [c for c in nav_items if not c.nav_only]
+    if not packaged:
+        packaged = nav_items or chapters
+        nav_items = packaged
     has_cover = bool(cover_path and os.path.isfile(cover_path))
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
@@ -301,12 +310,12 @@ def build_epub(out_path: str, chapters: list[Chapter], *, title: str, author: st
 
         z.writestr("META-INF/container.xml", CONTAINER_XML, zipfile.ZIP_DEFLATED)
         z.writestr("OEBPS/content.opf", opf_xml(
-            spine_chapters, title=title, author=author, lang=lang, book_id=book_id,
+            packaged, title=title, author=author, lang=lang, book_id=book_id,
             publisher=publisher, date=date, has_cover=has_cover, source=source),
             zipfile.ZIP_DEFLATED)
-        z.writestr("OEBPS/nav.xhtml", nav_xhtml(spine_chapters, lang, "目录"),
+        z.writestr("OEBPS/nav.xhtml", nav_xhtml(nav_items, lang, "目录"),
                    zipfile.ZIP_DEFLATED)
-        z.writestr("OEBPS/toc.ncx", ncx_xml(spine_chapters, title, book_id),
+        z.writestr("OEBPS/toc.ncx", ncx_xml(packaged, title, book_id),
                    zipfile.ZIP_DEFLATED)
         z.writestr("OEBPS/styles/style.css", css, zipfile.ZIP_DEFLATED)
         if has_cover:
@@ -322,7 +331,7 @@ def build_epub(out_path: str, chapters: list[Chapter], *, title: str, author: st
                                    image_size=size),
                        zipfile.ZIP_DEFLATED)
             z.write(cover_path, "OEBPS/images/cover.jpg", zipfile.ZIP_DEFLATED)
-        for ch in spine_chapters:
+        for ch in packaged:
             z.writestr(f"OEBPS/text/{ch.id}.xhtml",
                        chapter_xhtml(ch, lang, marker="true"), zipfile.ZIP_DEFLATED)
 
