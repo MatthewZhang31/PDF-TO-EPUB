@@ -2,6 +2,40 @@
 
 ## Environment
 
+**`git push` fails with `Failed to connect to github.com port 443` or
+`Recv failure: Connection was reset`**
+Not a credential problem. On networks that interfere with GitHub, plain TCP to
+port 443 may succeed while the TLS exchange is reset, and DNS often resolves
+`github.com` to a single IP that happens to be blocked while other GitHub IPs
+are reachable. Pinning the IP does **not** help (the reset follows the SNI, not
+the address) and neither does retrying.
+
+Look for a local proxy first — a running Clash / V2Ray / sing-box client is
+common and is the cleanest fix, because it is the user's own exit and no
+credential leaves their control:
+
+```powershell
+# find the listening port
+Get-NetTCPConnection -State Listen |
+  Where-Object { $_.LocalPort -in 7890,7891,7897,1080,10808,10809,2080 } |
+  Select-Object LocalPort, OwningProcess
+Get-Process | Where-Object ProcessName -match 'clash|verge|v2ray|xray|sing-box'
+```
+
+Then point git at it — scoped to this repository so nothing global changes:
+
+```powershell
+git -C <repo> config http.proxy http://127.0.0.1:7897
+git -C <repo> push origin main
+```
+
+`.git/config` is never committed, so the proxy stays machine-local. To scope it
+to GitHub across all repositories instead, use
+`git config --global http.https://github.com/.proxy http://127.0.0.1:7897`.
+
+Do **not** route a push through a public GitHub mirror or accelerator: those
+terminate TLS and would see the credential.
+
 **`UnicodeEncodeError: 'gbk' codec can't encode character`**
 The Windows console is cp936. Set `$env:PYTHONIOENCODING="utf-8"` before every
 `python` call. `pdf2epub.py` also reconfigures its own streams, but child
