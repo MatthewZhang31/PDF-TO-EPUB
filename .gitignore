@@ -1,0 +1,30 @@
+# --- conversion outputs (never commit a book's text or images) ---
+out/
+*.epub
+cover.jpg
+ocr.json
+book.json
+analysis.json
+pages_embedded.json
+heading_candidates.json
+toc.json
+toc.md
+epub_check.json
+cover.json
+pages/
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# --- editors / os ---
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*.tmp
+*.log

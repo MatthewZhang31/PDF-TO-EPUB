@@ -1,0 +1,13 @@
+# pdf-to-epub runtime requirements
+#
+# Install with a mirror on this machine: the default PyPI index times out.
+#   python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+
+pymupdf>=1.24          # PDF parsing, text extraction, page rendering, outlines
+pillow>=10             # cover resizing / re-encoding
+numpy>=1.24            # OCR input buffers
+
+# OCR fallback. Optional at import time: without it the toolkit still converts
+# PDFs that carry a usable text layer, and `analyze` reports mode=text-layer.
+rapidocr-onnxruntime>=1.2   # PP-OCR models with Chinese support, pip-only, offline
+onnxruntime>=1.17

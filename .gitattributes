@@ -1,0 +1,18 @@
+# Normalise line endings so a clone on another machine is byte-identical.
+# Windows git defaults to core.autocrlf=true, which would otherwise rewrite
+# every Python and Markdown file on checkout.
+* text=auto eol=lf
+
+*.py   text eol=lf
+*.md   text eol=lf
+*.ps1  text eol=crlf
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+*.json text eol=lf
+*.txt  text eol=lf
+
+# PDFs and images are binary; the pipeline never versions book content anyway
+*.pdf  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
